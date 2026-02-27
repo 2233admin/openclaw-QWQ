@@ -34,7 +34,6 @@ import { createDiscordRetryRunner } from "../../infra/retry-policy.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { createNonExitingRuntime, type RuntimeEnv } from "../../runtime.js";
 import { resolveDiscordAccount } from "../accounts.js";
-import { getDiscordGatewayEmitter } from "../monitor.gateway.js";
 import { fetchDiscordApplicationId } from "../probe.js";
 import { normalizeDiscordToken } from "../token.js";
 import { createDiscordVoiceCommand } from "../voice/command.js";
@@ -52,6 +51,7 @@ import {
 } from "./agent-components.js";
 import { resolveDiscordSlashCommandConfig } from "./commands.js";
 import { createExecApprovalButton, DiscordExecApprovalHandler } from "./exec-approvals.js";
+import { attachEarlyGatewayErrorGuard } from "./gateway-error-guard.js";
 import { createDiscordGatewayPlugin } from "./gateway-plugin.js";
 import {
   DiscordMessageListener,
@@ -71,7 +71,13 @@ import { resolveDiscordPresenceUpdate } from "./presence.js";
 import { resolveDiscordAllowlistConfig } from "./provider.allowlist.js";
 import { runDiscordGatewayLifecycle } from "./provider.lifecycle.js";
 import { resolveDiscordRestFetch } from "./rest-fetch.js";
-import { createNoopThreadBindingManager, createThreadBindingManager } from "./thread-bindings.js";
+import {
+  createNoopThreadBindingManager,
+  createThreadBindingManager,
+  resolveThreadBindingSessionTtlMs,
+  resolveThreadBindingsEnabled,
+  reconcileAcpThreadBindingsOnStartup,
+} from "./thread-bindings.js";
 import { formatThreadBindingTtlLabel } from "./thread-bindings.messages.js";
 
 export type MonitorDiscordOpts = {
@@ -102,47 +108,6 @@ function summarizeGuilds(entries?: Record<string, unknown>) {
   const sample = keys.slice(0, 4);
   const suffix = keys.length > sample.length ? ` (+${keys.length - sample.length})` : "";
   return `${sample.join(", ")}${suffix}`;
-}
-
-const DEFAULT_THREAD_BINDING_TTL_HOURS = 24;
-
-function normalizeThreadBindingTtlHours(raw: unknown): number | undefined {
-  if (typeof raw !== "number" || !Number.isFinite(raw)) {
-    return undefined;
-  }
-  if (raw < 0) {
-    return undefined;
-  }
-  return raw;
-}
-
-function resolveThreadBindingSessionTtlMs(params: {
-  channelTtlHoursRaw: unknown;
-  sessionTtlHoursRaw: unknown;
-}): number {
-  const ttlHours =
-    normalizeThreadBindingTtlHours(params.channelTtlHoursRaw) ??
-    normalizeThreadBindingTtlHours(params.sessionTtlHoursRaw) ??
-    DEFAULT_THREAD_BINDING_TTL_HOURS;
-  return Math.floor(ttlHours * 60 * 60 * 1000);
-}
-
-function normalizeThreadBindingsEnabled(raw: unknown): boolean | undefined {
-  if (typeof raw !== "boolean") {
-    return undefined;
-  }
-  return raw;
-}
-
-function resolveThreadBindingsEnabled(params: {
-  channelEnabledRaw: unknown;
-  sessionEnabledRaw: unknown;
-}): boolean {
-  return (
-    normalizeThreadBindingsEnabled(params.channelEnabledRaw) ??
-    normalizeThreadBindingsEnabled(params.sessionEnabledRaw) ??
-    true
-  );
 }
 
 function formatThreadBindingSessionTtlLabel(ttlMs: number): string {
@@ -228,33 +193,6 @@ function isDiscordDisallowedIntentsError(err: unknown): boolean {
   }
   const message = formatErrorMessage(err);
   return message.includes(String(DISCORD_DISALLOWED_INTENTS_CODE));
-}
-
-type EarlyGatewayErrorGuard = {
-  pendingErrors: unknown[];
-  release: () => void;
-};
-
-function attachEarlyGatewayErrorGuard(client: Client): EarlyGatewayErrorGuard {
-  const pendingErrors: unknown[] = [];
-  const gateway = client.getPlugin<GatewayPlugin>("gateway");
-  const emitter = getDiscordGatewayEmitter(gateway);
-  if (!emitter) {
-    return {
-      pendingErrors,
-      release: () => {},
-    };
-  }
-  const onGatewayError = (err: unknown) => {
-    pendingErrors.push(err);
-  };
-  emitter.on("error", onGatewayError);
-  return {
-    pendingErrors,
-    release: () => {
-      emitter.removeListener("error", onGatewayError);
-    },
-  };
 }
 
 export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
@@ -392,6 +330,18 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
         sessionTtlMs: threadBindingSessionTtlMs,
       })
     : createNoopThreadBindingManager(account.accountId);
+  if (threadBindingsEnabled) {
+    const reconciliation = reconcileAcpThreadBindingsOnStartup({
+      cfg,
+      accountId: account.accountId,
+      sendFarewell: false,
+    });
+    if (reconciliation.removed > 0) {
+      logVerbose(
+        `discord: removed ${reconciliation.removed}/${reconciliation.checked} stale ACP thread bindings on startup for account ${account.accountId}`,
+      );
+    }
+  }
   let lifecycleStarted = false;
   let releaseEarlyGatewayErrorGuard = () => {};
   try {
