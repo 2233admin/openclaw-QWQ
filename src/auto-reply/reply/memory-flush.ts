@@ -24,11 +24,7 @@ export const DEFAULT_MEMORY_FLUSH_SYSTEM_PROMPT = [
   `You may reply, but usually ${SILENT_REPLY_TOKEN} is correct.`,
 ].join(" ");
 
-import { formatDateStampInTimezone } from "../../agents/date-time.js";
-    return `${year}-${month}-${day}`;
-  }
-  return new Date(nowMs).toISOString().slice(0, 10);
-}
+
 
 export function resolveMemoryFlushPromptForRun(params: {
   prompt: string;

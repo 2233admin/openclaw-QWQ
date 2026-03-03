@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { openBoundaryFile } from "../../infra/boundary-file-read.js";
 import { formatDateStampInTimezone, resolveUserTimezone } from "../../agents/date-time.js";
-import type { OpenClawConfig } from "../../gateway/protocol/config-types.js";
+import type { OpenClawConfig } from "../../config/config.js";
 
 const MAX_CONTEXT_CHARS = 3000;
 
