@@ -50,7 +50,7 @@ describe("kimi-coding implicit provider (#22409)", () => {
     process.env.KIMI_API_KEY = "test-key";
 
     try {
-      const providers = await resolveImplicitProviders({
+      const providers = await resolveImplicitProvidersForTest({
         agentDir,
         explicitProviders: {
           "kimi-coding": {
